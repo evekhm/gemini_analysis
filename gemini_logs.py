@@ -159,9 +159,9 @@ def extract_token_count(full_response_str):
 
         # Extract totalTokenCount
         usage_metadata = response_json.get('usageMetadata', {})
-        total_token_count = usage_metadata.get('totalTokenCount')
+        candidates_token_count = usage_metadata.get('candidatesTokenCount')
 
-        return total_token_count
+        return candidates_token_count
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         return None
 
@@ -312,14 +312,14 @@ def analyze_model_data(df_model, model_name):
 
     # Token statistics
     df_tokens = None
-    if 'total_token_count' in df_model.columns and df_model['total_token_count'].notna().any():
-        df_tokens = df_model.dropna(subset=['total_token_count'])
+    if 'candidates_token_count' in df_model.columns and df_model['candidates_token_count'].notna().any():
+        df_tokens = df_model.dropna(subset=['candidates_token_count'])
         if len(df_tokens) > 0:
             print(f"Token statistics:")
-            print(f"  Mean tokens: {df_tokens['total_token_count'].mean():.1f}")
-            print(f"  Median tokens: {df_tokens['total_token_count'].median():.1f}")
-            print(f"  Min tokens: {df_tokens['total_token_count'].min()}")
-            print(f"  Max tokens: {df_tokens['total_token_count'].max()}")
+            print(f"  Mean output tokens: {df_tokens['candidates_token_count'].mean():.1f}")
+            print(f"  Median output tokens: {df_tokens['candidates_token_count'].median():.1f}")
+            print(f"  Min output tokens: {df_tokens['candidates_token_count'].min()}")
+            print(f"  Max output tokens: {df_tokens['candidates_token_count'].max()}")
 
     print(f"\n--- Latency Distribution ---")
     print(df_model['latency_category'].value_counts().sort_index())
@@ -333,7 +333,7 @@ def analyze_model_data(df_model, model_name):
     token_latency_corr = None
     correlation_strength = "N/A"
     if df_tokens is not None and len(df_tokens) > 1:
-        token_latency_corr = np.corrcoef(df_tokens['total_token_count'], df_tokens['latency_seconds'])[0, 1]
+        token_latency_corr = np.corrcoef(df_tokens['candidates_token_count'], df_tokens['latency_seconds'])[0, 1]
         if abs(token_latency_corr) > 0.7:
             correlation_strength = "Strong"
         elif abs(token_latency_corr) > 0.3:
@@ -394,20 +394,20 @@ def analyze_model_data(df_model, model_name):
     if df_tokens is not None and len(df_tokens) > 0:
         token_stats = [
             ['Metric', 'Value'],
-            ['Mean Tokens', f'{df_tokens["total_token_count"].mean():.1f}'],
-            ['Median Tokens', f'{df_tokens["total_token_count"].median():.1f}'],
-            ['Min Tokens', f'{df_tokens["total_token_count"].min():,}'],
-            ['Max Tokens', f'{df_tokens["total_token_count"].max():,}'],
+            ['Mean Output Tokens', f'{df_tokens["candidates_token_count"].mean():.1f}'],
+            ['Median Output Tokens', f'{df_tokens["candidates_token_count"].median():.1f}'],
+            ['Min Output Tokens', f'{df_tokens["candidates_token_count"].min():,}'],
+            ['Max Output Tokens', f'{df_tokens["candidates_token_count"].max():,}'],
             ['Token-Latency Corr', f'{token_latency_corr:.3f}' if token_latency_corr is not None else 'N/A'],
             ['Correlation Strength', correlation_strength],
         ]
     else:
         token_stats = [
             ['Metric', 'Value'],
-            ['Mean Tokens', 'N/A'],
-            ['Median Tokens', 'N/A'],
-            ['Min Tokens', 'N/A'],
-            ['Max Tokens', 'N/A'],
+            ['Mean Output Tokens', 'N/A'],
+            ['Median Output Tokens', 'N/A'],
+            ['Min Output Tokens', 'N/A'],
+            ['Max Output Tokens', 'N/A'],
             ['Token-Latency Corr', 'N/A'],
             ['Correlation Strength', 'N/A'],
         ]
@@ -494,7 +494,7 @@ def analyze_model_data(df_model, model_name):
     # Plot 3: Latency vs Token Count
     ax5 = plt.subplot(4, 3, 6)
     if df_tokens is not None and len(df_tokens) > 0:
-        scatter = plt.scatter(df_tokens['total_token_count'], df_tokens['latency_seconds'],
+        scatter = plt.scatter(df_tokens['candidates_token_count'], df_tokens['latency_seconds'],
                               alpha=0.6, s=40, c=df_tokens['latency_seconds'],
                               cmap='viridis', edgecolors='black', linewidth=0.5)
 
@@ -509,9 +509,9 @@ def analyze_model_data(df_model, model_name):
                      transform=ax5.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
             # Safe trend line
-            z, p = safe_polyfit(df_tokens['total_token_count'], df_tokens['latency_seconds'])
+            z, p = safe_polyfit(df_tokens['candidates_token_count'], df_tokens['latency_seconds'])
             if z is not None and p is not None:
-                plt.plot(df_tokens['total_token_count'], p(df_tokens['total_token_count']),
+                plt.plot(df_tokens['candidates_token_count'], p(df_tokens['candidates_token_count']),
                          "r--", alpha=0.8, linewidth=2)
     else:
         plt.text(0.5, 0.5, 'No token count data available',
@@ -568,14 +568,14 @@ def analyze_model_data(df_model, model_name):
     # Plot 6: Token Count Distribution
     ax9 = plt.subplot(4, 3, 9)
     if df_tokens is not None and len(df_tokens) > 0:
-        plt.hist(df_tokens['total_token_count'], bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
+        plt.hist(df_tokens['candidates_token_count'], bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
         plt.title('Token Count Distribution', fontsize=14, fontweight='bold')
         plt.xlabel('Total Token Count')
         plt.ylabel('Frequency')
-        plt.axvline(df_tokens['total_token_count'].mean(), color='red', linestyle='--',
-                    label=f'Mean: {df_tokens["total_token_count"].mean():.1f}')
-        plt.axvline(df_tokens['total_token_count'].median(), color='green', linestyle='--',
-                    label=f'Median: {df_tokens["total_token_count"].median():.1f}')
+        plt.axvline(df_tokens['candidates_token_count'].mean(), color='red', linestyle='--',
+                    label=f'Mean: {df_tokens["candidates_token_count"].mean():.1f}')
+        plt.axvline(df_tokens['candidates_token_count'].median(), color='green', linestyle='--',
+                    label=f'Median: {df_tokens["candidates_token_count"].median():.1f}')
         plt.legend()
     else:
         plt.text(0.5, 0.5, 'No token count data', ha='center', va='center', transform=ax9.transAxes)
@@ -705,13 +705,13 @@ try:
     # Extract token count and model name
     print("Extracting token counts and model names...")
     # MODIFIED: Use the JSON string column instead of the struct
-    df_gemini['total_token_count'] = df_gemini['full_response_json'].apply(extract_token_count)
+    df_gemini['candidates_token_count'] = df_gemini['full_response_json'].apply(extract_token_count)
     df_gemini['model_name'] = df_gemini['model'].apply(extract_model_name)
 
     # Print overall summary
     print(f"\n--- OVERALL SUMMARY ---")
     print(f"Total requests: {len(df_gemini)}")
-    print(f"Requests with token data: {df_gemini['total_token_count'].notna().sum()}")
+    print(f"Requests with token data: {df_gemini['candidates_token_count'].notna().sum()}")
     print(f"Unique models: {df_gemini['model_name'].nunique()}")
     print(f"Models found: {sorted(df_gemini['model_name'].unique())}")
 
