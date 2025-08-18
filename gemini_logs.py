@@ -499,7 +499,7 @@ def analyze_model_data(df_model, model_name):
                               cmap='viridis', edgecolors='black', linewidth=0.5)
 
         plt.colorbar(scatter, label='Latency (seconds)')
-        plt.title('Latency vs Token Count', fontsize=14, fontweight='bold')
+        plt.title('Latency vs Output Token Count', fontsize=14, fontweight='bold')
         plt.xlabel('Total Token Count')
         plt.ylabel('Latency (seconds)')
         plt.grid(True, alpha=0.3)
