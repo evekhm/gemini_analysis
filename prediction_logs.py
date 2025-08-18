@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 
 # --- USER INPUT SECTION ---
 # BigQuery dataset and table IDs - now using environment variables
-dataset_id = os.getenv("DATASET", "MY_DATASET")
+dataset_id = os.getenv("DATASET_APP", "uhg")
 project_id = os.getenv("PROJECT_ID")
 # --- END USER INPUT SECTION ---
 
@@ -201,7 +201,7 @@ def analyze_app_version_data(df_app, app_version):
     # Clean data - remove any negative or extremely large values
     df_app = df_app[
         (df_app['time_taken_total'] >= 0) &
-        (df_app['time_taken_total'] <= 300) &  # Cap at 5 minutes
+        (df_app['time_taken_total'] <= 300) & # Cap at 5 minutes
         (df_app['time_taken_retrieval'] >= 0) &
         (df_app['time_taken_llm'] >= 0) &
         (df_app['tokens_used'] >= 0)
@@ -246,11 +246,11 @@ def analyze_app_version_data(df_app, app_version):
     print(f"Date range: {df_app['timestamp'].min()} to {df_app['timestamp'].max()}")
 
     print(f"\nTiming statistics:")
-    print(f"  Total time - Mean: {mean_total:.3f}s, Std Dev: {std_total:.3f}s")
-    print(f"  Retrieval time - Mean: {df_app['time_taken_retrieval'].mean():.3f}s")
-    print(f"  LLM time - Mean: {df_app['time_taken_llm'].mean():.3f}s")
-    print(f"  > 2 STD ({std_2_threshold:.3f}s): {count_gt_2_std} ({percent_gt_2_std:.2f}%)")
-    print(f"  > 3 STD ({std_3_threshold:.3f}s): {count_gt_3_std} ({percent_gt_3_std:.2f}%)")
+    print(f" Total time - Mean: {mean_total:.3f}s, Std Dev: {std_total:.3f}s")
+    print(f" Retrieval time - Mean: {df_app['time_taken_retrieval'].mean():.3f}s")
+    print(f" LLM time - Mean: {df_app['time_taken_llm'].mean():.3f}s")
+    print(f" > 2 STD ({std_2_threshold:.3f}s): {count_gt_2_std} ({percent_gt_2_std:.2f}%)")
+    print(f" > 3 STD ({std_3_threshold:.3f}s): {count_gt_3_std} ({percent_gt_3_std:.2f}%)")
 
     # Calculate correlations
     total_tokens_corr = np.corrcoef(df_app['tokens_used'], df_app['time_taken_total'])[0, 1] if len(df_app) > 1 else 0
@@ -294,7 +294,7 @@ def analyze_app_version_data(df_app, app_version):
         table1[(0, i)].set_text_props(weight='bold', color='white')
 
     # Highlight the STD deviation rows
-    for row_idx in [9, 10]:  # > 2 STD and > 3 STD rows
+    for row_idx in [9, 10]: # > 2 STD and > 3 STD rows
         for col_idx in range(len(basic_stats[0])):
             table1[(row_idx, col_idx)].set_facecolor('#FFE0B2')
 
@@ -329,32 +329,34 @@ def analyze_app_version_data(df_app, app_version):
 
     plt.title('Average Time Breakdown', fontsize=16, fontweight='bold', pad=20)
 
-    # Table 3: Time Breakdown by Category
+    # Table 3: Time Breakdown by Category - UPDATED WITH PERCENTAGE COLUMN
     ax3 = plt.subplot(4, 3, 3)
     ax3.axis('tight')
     ax3.axis('off')
 
     # Calculate breakdown by latency category
-    category_breakdown = []
     category_order = ['Fast (< 3s)', 'Medium (3-5s)', 'Slow (5-10s)', 'Very Slow (10-20s)', 'Outlier (20s+)']
+    total_predictions = len(df_app)
 
-    breakdown_data = [['Category', 'Count', 'Avg Retrieval', 'Avg LLM', 'Avg Total']]
+    breakdown_data = [['Category', 'Count', '% of Total', 'Avg Retrieval', 'Avg LLM', 'Avg Total']]
 
     for category in category_order:
         cat_data = df_app[df_app['latency_category'] == category]
         if len(cat_data) > 0:
+            percentage_of_total = (len(cat_data) / total_predictions) * 100
             breakdown_data.append([
                 category,
                 f'{len(cat_data)}',
+                f'{percentage_of_total:.1f}%',
                 f'{cat_data["time_taken_retrieval"].mean():.2f}s',
                 f'{cat_data["time_taken_llm"].mean():.2f}s',
                 f'{cat_data["time_taken_total"].mean():.2f}s'
             ])
 
     table3 = ax3.table(cellText=breakdown_data[1:], colLabels=breakdown_data[0],
-                       cellLoc='center', loc='center', colWidths=[0.25, 0.15, 0.2, 0.2, 0.2])
+                       cellLoc='center', loc='center', colWidths=[0.2, 0.12, 0.12, 0.18, 0.18, 0.2])
     table3.auto_set_font_size(False)
-    table3.set_fontsize(10)
+    table3.set_fontsize(9)
     table3.scale(1, 2.0)
 
     for i in range(len(breakdown_data[0])):
@@ -537,41 +539,41 @@ def analyze_app_version_data(df_app, app_version):
 
     # Save plot to file
     safe_app_version = app_version.replace(".", "_").replace("-", "_").replace("/", "_")
-    filename = os.path.join(plots_dir,  f'prediction_analysis_{safe_app_version}_{timestamp_str}')
+    filename = os.path.join(plots_dir, f'prediction_analysis_{safe_app_version}_{timestamp_str}')
 
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
     plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
 
-    # plt.show()  # Commented out to match the Gemini analysis behavior
+    # plt.show() # Commented out to match the Gemini analysis behavior
 
     # Print enhanced insights
     print(f"\n--- Key Insights for {app_version} ---")
 
     print(f"1. Performance Overview:")
-    print(f"   - Average total time: {mean_total:.3f}s")
-    print(f"   - Standard deviation: {std_total:.3f}s")
-    print(f"   - 95th percentile: {df_app['time_taken_total'].quantile(0.95):.3f}s")
-    print(f"   - Requests > 2 STD: {count_gt_2_std} ({percent_gt_2_std:.2f}%)")
-    print(f"   - Requests > 3 STD: {count_gt_3_std} ({percent_gt_3_std:.2f}%)")
+    print(f"  - Average total time: {mean_total:.3f}s")
+    print(f"  - Standard deviation: {std_total:.3f}s")
+    print(f"  - 95th percentile: {df_app['time_taken_total'].quantile(0.95):.3f}s")
+    print(f"  - Requests > 2 STD: {count_gt_2_std} ({percent_gt_2_std:.2f}%)")
+    print(f"  - Requests > 3 STD: {count_gt_3_std} ({percent_gt_3_std:.2f}%)")
 
     if percent_gt_2_std > 5:
-        print(f"   ⚠️  WARNING: High percentage of requests beyond 2 STD - investigate outliers")
+        print(f"  ⚠️ WARNING: High percentage of requests beyond 2 STD - investigate outliers")
     if percent_gt_3_std > 1:
-        print(f"   ⚠️  WARNING: Significant percentage of requests beyond 3 STD - potential system issues")
+        print(f"  ⚠️ WARNING: Significant percentage of requests beyond 3 STD - potential system issues")
 
     print(f"2. Time Breakdown:")
-    print(f"   - Retrieval takes {df_app['retrieval_percentage'].mean():.1f}% of total time")
-    print(f"   - LLM processing takes {df_app['llm_percentage'].mean():.1f}% of total time")
-    print(f"   - Other overhead takes {df_app['other_percentage'].mean():.1f}% of total time")
+    print(f"  - Retrieval takes {df_app['retrieval_percentage'].mean():.1f}% of total time")
+    print(f"  - LLM processing takes {df_app['llm_percentage'].mean():.1f}% of total time")
+    print(f"  - Other overhead takes {df_app['other_percentage'].mean():.1f}% of total time")
 
     print(f"3. Token Analysis:")
-    print(f"   - Average tokens per prediction: {df_app['tokens_used'].mean():.1f}")
-    print(f"   - Token-Total time correlation: {total_tokens_corr:.3f}")
+    print(f"  - Average tokens per prediction: {df_app['tokens_used'].mean():.1f}")
+    print(f"  - Token-Total time correlation: {total_tokens_corr:.3f}")
 
     if abs(total_tokens_corr) > 0.3:
         direction = "positive" if total_tokens_corr > 0 else "negative"
         strength = "strong" if abs(total_tokens_corr) > 0.7 else "moderate"
-        print(f"   - {strength.capitalize()} {direction} correlation between tokens and total time")
+        print(f"  - {strength.capitalize()} {direction} correlation between tokens and total time")
 
     print(f"Plots saved as:")
     print(f" - {filename}.png")
@@ -603,7 +605,7 @@ try:
     print(f"\nPredictions per app version:")
     version_counts = df_prediction['app_version'].value_counts()
     for version, count in version_counts.items():
-        print(f"  {version}: {count:,} predictions ({count/len(df_prediction)*100:.1f}%)")
+        print(f" {version}: {count:,} predictions ({count/len(df_prediction)*100:.1f}%)")
 
     # Analyze each app version separately
     for app_version in sorted(df_prediction['app_version'].unique()):

@@ -52,7 +52,8 @@ pip install -r requirements.txt
 ### Set environment variables
 ```shell
 export PROJECT_ID="..."
-export DATASET="..."
+export DATASET="..."           # configured for logging
+export DATASET_APP="..."       # used by the app
 export GEMINI_LOG_TABLE="..."  # configured for logging
 ```
 
