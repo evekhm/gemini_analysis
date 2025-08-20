@@ -61,17 +61,18 @@ export GEMINI_LOG_TABLE="..."  # configured for logging
 
 Usage examples:
 ```shell
-# Last 10 days 
-python gemini_logs.py -d 10
+# Last 7 days 
+# Basic usage with default settings (5min, 10min buckets)
+python gemini_analysis.py -d 7
 
-# Last 10 days ending at a specific time
-python gemini_logs.py -d 10 -e "2025-01-15 23:59:59"
+# Custom bucket sizes for different data densities
+python gemini_logs.py -d 7 -b "600,1800"  # 10min, 30min buckets
 
-# Also works with explicit start/end (ignores -d if not specified)
-python gemini_logs.py -s "2025-01-01 00:00:00" -e "2025-01-31 23:59:59"
+# Multiple bucket sizes for comprehensive analysis
+python gemini_logs.py -d 7 -b "60,300,600" -m start_time
 
-# All data starting from a specific date till current timestamp
-python gemini_logs.py --start "2025-01-15 12:00:00"
+# Specific time range with custom buckets
+python gemini_logs.py -s "2024-01-01 00:00:00" -e "2024-01-02 00:00:00" -b "300,900"
 ```
 
 
