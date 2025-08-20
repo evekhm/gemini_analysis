@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 import argparse
 
 import google.auth
-import google.auth
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -32,6 +31,414 @@ if not project_id:
     _, project_id = google.auth.default()
 
 client = bigquery.Client(project=project_id)
+
+def get_project_name(project_id):
+    """Try to get project name from project ID using Google Cloud Resource Manager API"""
+    try:
+        from google.cloud import resourcemanager_v3
+        client = resourcemanager_v3.ProjectsClient()
+        project_name = f"projects/{project_id}"
+        project = client.get_project(name=project_name)
+        return project.display_name if project.display_name else project_id
+    except Exception as e:
+        print(f"Could not retrieve project name: {e}")
+        return project_id
+
+def add_page_header(fig, project_id, start_time, end_time, generation_time, title_suffix=""):
+    """Add project information and metadata to the top of each page"""
+    try:
+        project_name = get_project_name(project_id)
+        if project_name != project_id:
+            project_info = f"Project: {project_name} (ID: {project_id})"
+        else:
+            project_info = f"Project ID: {project_id}"
+    except:
+        project_info = f"Project ID: {project_id}"
+
+    header_text = f"""{project_info}
+Analysis Period: {start_time} to {end_time} UTC
+Generated: {generation_time} UTC{title_suffix}"""
+
+    fig.text(0.02, 0.98, header_text, fontsize=10, verticalalignment='top',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
+
+def create_latency_token_plots(df_tokens, model_name, start_time, end_time, generation_time):
+    """Create standalone high-resolution latency vs token plots with multiple scales"""
+    if df_tokens is None or len(df_tokens) == 0:
+        print(f"No token data available for {model_name}")
+        return
+
+    # Filter positive tokens for log scale
+    df_tokens_positive = df_tokens[df_tokens['output_tokens'] > 0].copy()
+    if len(df_tokens_positive) == 0:
+        print(f"No positive token data available for {model_name}")
+        return
+
+    # Create color mapping based on input tokens
+    input_tokens_available = df_tokens_positive['input_tokens'].notna().any()
+    if input_tokens_available:
+        color_data = df_tokens_positive['input_tokens']
+        color_label = 'Input Tokens'
+        color_map = 'plasma'  # Good color map for input tokens
+    else:
+        color_data = df_tokens_positive['latency_seconds']
+        color_label = 'Latency (seconds)'
+        color_map = 'viridis'
+
+    # Calculate correlation
+    token_latency_corr = np.corrcoef(df_tokens_positive['output_tokens'],
+                                     df_tokens_positive['latency_seconds'])[0, 1]
+
+    safe_model_name = model_name.replace("-", "_").replace(".", "_")
+
+    # Create figure with 2x2 subplots for different scale combinations
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+
+    # Add page header
+    add_page_header(fig, project_id, start_time, end_time, generation_time,
+                    f" - Latency vs Output Tokens Analysis")
+
+    fig.suptitle(f'Latency vs Output Token Count Analysis - {model_name}\n'
+                 f'Correlation: {token_latency_corr:.3f} | Total Requests: {len(df_tokens_positive):,}',
+                 fontsize=16, fontweight='bold', y=0.92)
+
+    # Plot configurations: (x_scale, y_scale, title_suffix)
+    plot_configs = [
+        ('linear', 'linear', 'Linear-Linear'),
+        ('log', 'linear', 'Log-Linear'),
+        ('linear', 'log', 'Linear-Log'),
+        ('log', 'log', 'Log-Log')
+    ]
+
+    for idx, (x_scale, y_scale, title_suffix) in enumerate(plot_configs):
+        ax = axes[idx // 2, idx % 2]
+
+        # Create scatter plot with smaller dots
+        scatter = ax.scatter(df_tokens_positive['output_tokens'],
+                             df_tokens_positive['latency_seconds'],
+                             c=color_data, cmap=color_map, alpha=0.6, s=8,  # Smaller dots (s=8)
+                             edgecolors='black', linewidth=0.1)
+
+        # Set scales
+        if x_scale == 'log':
+            ax.set_xscale('log')
+        if y_scale == 'log':
+            ax.set_yscale('log')
+
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label(color_label, fontsize=10)
+
+        # Labels and title
+        ax.set_xlabel(f'Output Token Count ({x_scale.title()} Scale)', fontsize=12)
+        ax.set_ylabel(f'Latency ({y_scale.title()} Scale)', fontsize=12)
+        ax.set_title(f'{title_suffix} Scale\nCorr: {token_latency_corr:.3f}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Add trend line (handle different scales appropriately)
+        try:
+            if x_scale == 'log' and y_scale == 'log':
+                # Log-log: use log of both variables
+                log_x = np.log10(df_tokens_positive['output_tokens'])
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(log_x, log_y)
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['output_tokens'].min()),
+                                          np.log10(df_tokens_positive['output_tokens'].max()), 100)
+                    y_trend = 10**(z[0] * np.log10(x_trend) + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif x_scale == 'log':
+                # Log-linear: use log of x
+                log_x = np.log10(df_tokens_positive['output_tokens'])
+                z, p = safe_polyfit(log_x, df_tokens_positive['latency_seconds'])
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['output_tokens'].min()),
+                                          np.log10(df_tokens_positive['output_tokens'].max()), 100)
+                    y_trend = z[0] * np.log10(x_trend) + z[1]
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif y_scale == 'log':
+                # Linear-log: use log of y
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(df_tokens_positive['output_tokens'], log_y)
+                if z is not None:
+                    x_trend = np.linspace(df_tokens_positive['output_tokens'].min(),
+                                          df_tokens_positive['output_tokens'].max(), 100)
+                    y_trend = 10**(z[0] * x_trend + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            else:
+                # Linear-linear: standard approach
+                z, p = safe_polyfit(df_tokens_positive['output_tokens'],
+                                    df_tokens_positive['latency_seconds'])
+                if z is not None and p is not None:
+                    ax.plot(df_tokens_positive['output_tokens'],
+                            p(df_tokens_positive['output_tokens']),
+                            "r--", alpha=0.8, linewidth=2)
+        except Exception as e:
+            print(f"Could not add trend line for {title_suffix}: {e}")
+
+        # Add statistics text box
+        stats_text = f'N: {len(df_tokens_positive):,}\n'
+        if input_tokens_available:
+            stats_text += f'Input tokens: {df_tokens_positive["input_tokens"].min():.0f}-{df_tokens_positive["input_tokens"].max():.0f}\n'
+        stats_text += f'Output tokens: {df_tokens_positive["output_tokens"].min():.0f}-{df_tokens_positive["output_tokens"].max():.0f}\n'
+        stats_text += f'Latency: {df_tokens_positive["latency_seconds"].min():.2f}-{df_tokens_positive["latency_seconds"].max():.2f}s'
+
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.88])
+
+    # Save high-resolution plots
+    filename_base = os.path.join(plots_dir, f'latency_vs_tokens_{safe_model_name}_{timestamp_str}')
+
+    # Save as high-resolution PNG (4K equivalent)
+    plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_base}.png', dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_base}.pdf', bbox_inches='tight', facecolor='white')
+
+    if args.show:
+        plt.show()
+
+    print(f"High-resolution latency vs token plots saved:")
+    print(f" - {filename_base}_4K.png (4K resolution)")
+    print(f" - {filename_base}.png (standard resolution)")
+    print(f" - {filename_base}.pdf")
+
+
+def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_time, generation_time):
+    """Create enhanced hourly analysis differentiated by working vs non-working days"""
+    if df_model.empty:
+        print(f"No data available for {model_name}")
+        return
+
+    # Add day of week information
+    df_model = df_model.copy()
+    df_model['hour'] = df_model['logging_time'].dt.hour
+    df_model['day_of_week'] = df_model['logging_time'].dt.day_name()
+    df_model['is_weekend'] = df_model['logging_time'].dt.weekday >= 5  # Saturday=5, Sunday=6
+    df_model['day_type'] = df_model['is_weekend'].map({True: 'Non-Working Days', False: 'Working Days'})
+
+    # Create figure with 2x3 layout
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+
+    # Add page header
+    add_page_header(fig, project_id, start_time, end_time, generation_time,
+                    f" - Hourly Analysis by Day Type")
+
+    fig.suptitle(f'Latency Distribution by Hour and Day Type - {model_name}',
+                 fontsize=16, fontweight='bold', y=0.95)
+
+    # Separate data by working vs non-working days
+    working_data = df_model[df_model['day_type'] == 'Working Days']
+    non_working_data = df_model[df_model['day_type'] == 'Non-Working Days']
+
+    # Plot 1: Request Count by Hour - Working Days
+    ax1 = axes[0, 0]
+    if len(working_data) > 0:
+        working_hourly = working_data['hour'].value_counts().reindex(range(24), fill_value=0)
+        bars1 = ax1.bar(working_hourly.index, working_hourly.values, alpha=0.7, color='green', edgecolor='black')
+        ax1.set_title('Request Count by Hour\n(Working Days)', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Hour of Day')
+        ax1.set_ylabel('Request Count')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xticks(range(0, 24, 2))
+
+        # Add count labels on bars
+        for bar in bars1:
+            height = bar.get_height()
+            if height > 0:
+                ax1.text(bar.get_x() + bar.get_width()/2., height + max(working_hourly.values) * 0.01,
+                         f'{int(height)}', ha='center', va='bottom', fontsize=8)
+    else:
+        ax1.text(0.5, 0.5, 'No working day data available', ha='center', va='center', transform=ax1.transAxes)
+        ax1.set_title('Request Count by Hour\n(Working Days)', fontsize=14, fontweight='bold')
+
+    # Plot 2: Request Count by Hour - Non-Working Days
+    ax2 = axes[0, 1]
+    if len(non_working_data) > 0:
+        non_working_hourly = non_working_data['hour'].value_counts().reindex(range(24), fill_value=0)
+        bars2 = ax2.bar(non_working_hourly.index, non_working_hourly.values, alpha=0.7, color='orange', edgecolor='black')
+        ax2.set_title('Request Count by Hour\n(Non-Working Days)', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Hour of Day')
+        ax2.set_ylabel('Request Count')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xticks(range(0, 24, 2))
+
+        # Add count labels on bars
+        for bar in bars2:
+            height = bar.get_height()
+            if height > 0:
+                ax2.text(bar.get_x() + bar.get_width()/2., height + max(non_working_hourly.values) * 0.01,
+                         f'{int(height)}', ha='center', va='bottom', fontsize=8)
+    else:
+        ax2.text(0.5, 0.5, 'No non-working day data available', ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title('Request Count by Hour\n(Non-Working Days)', fontsize=14, fontweight='bold')
+
+    # Plot 3: Mean Latency by Hour - Working Days
+    ax3 = axes[0, 2]
+    if len(working_data) > 0:
+        working_latency = working_data.groupby('hour')['latency_seconds'].agg(['mean', 'count']).reset_index()
+        working_latency_filtered = working_latency[working_latency['count'] >= 2]
+
+        if len(working_latency_filtered) > 0:
+            bars3 = ax3.bar(working_latency_filtered['hour'], working_latency_filtered['mean'],
+                            alpha=0.7, color='lightgreen', edgecolor='black')
+            ax3.set_title('Mean Latency by Hour\n(Working Days)', fontsize=14, fontweight='bold')
+            ax3.set_xlabel('Hour of Day')
+            ax3.set_ylabel('Mean Latency (seconds)')
+            ax3.grid(True, alpha=0.3)
+            ax3.set_xticks(range(0, 24, 2))
+
+            # Add latency values on bars
+            for bar, latency in zip(bars3, working_latency_filtered['mean']):
+                ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(working_latency_filtered['mean']) * 0.01,
+                         f'{latency:.2f}s', ha='center', va='bottom', fontsize=8)
+        else:
+            ax3.text(0.5, 0.5, 'Insufficient data for hourly latency analysis',
+                     ha='center', va='center', transform=ax3.transAxes)
+            ax3.set_title('Mean Latency by Hour\n(Working Days)', fontsize=14, fontweight='bold')
+    else:
+        ax3.text(0.5, 0.5, 'No working day data available', ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Mean Latency by Hour\n(Working Days)', fontsize=14, fontweight='bold')
+
+    # Plot 4: Mean Latency by Hour - Non-Working Days
+    ax4 = axes[1, 0]
+    if len(non_working_data) > 0:
+        non_working_latency = non_working_data.groupby('hour')['latency_seconds'].agg(['mean', 'count']).reset_index()
+        non_working_latency_filtered = non_working_latency[non_working_latency['count'] >= 2]
+
+        if len(non_working_latency_filtered) > 0:
+            bars4 = ax4.bar(non_working_latency_filtered['hour'], non_working_latency_filtered['mean'],
+                            alpha=0.7, color='lightsalmon', edgecolor='black')
+            ax4.set_title('Mean Latency by Hour\n(Non-Working Days)', fontsize=14, fontweight='bold')
+            ax4.set_xlabel('Hour of Day')
+            ax4.set_ylabel('Mean Latency (seconds)')
+            ax4.grid(True, alpha=0.3)
+            ax4.set_xticks(range(0, 24, 2))
+
+            # Add latency values on bars
+            for bar, latency in zip(bars4, non_working_latency_filtered['mean']):
+                ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(non_working_latency_filtered['mean']) * 0.01,
+                         f'{latency:.2f}s', ha='center', va='bottom', fontsize=8)
+        else:
+            ax4.text(0.5, 0.5, 'Insufficient data for hourly latency analysis',
+                     ha='center', va='center', transform=ax4.transAxes)
+            ax4.set_title('Mean Latency by Hour\n(Non-Working Days)', fontsize=14, fontweight='bold')
+    else:
+        ax4.text(0.5, 0.5, 'No non-working day data available', ha='center', va='center', transform=ax4.transAxes)
+        ax4.set_title('Mean Latency by Hour\n(Non-Working Days)', fontsize=14, fontweight='bold')
+
+    # Plot 5: Box plots by day of week
+    ax5 = axes[1, 1]
+    days_with_data = df_model['day_of_week'].value_counts()
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    days_to_plot = [day for day in day_order if day in days_with_data.index and days_with_data[day] >= 3]
+
+    if len(days_to_plot) > 0:
+        day_data = []
+        day_labels = []
+        for day in days_to_plot:
+            data = df_model[df_model['day_of_week'] == day]['latency_seconds'].values
+            if len(data) >= 3:
+                day_data.append(data)
+                day_labels.append(f"{day}\n(n={len(data)})")
+
+        if len(day_data) > 0:
+            box_plot = ax5.boxplot(day_data, labels=day_labels, patch_artist=True)
+
+            # Color weekends differently
+            for i, (patch, day) in enumerate(zip(box_plot['boxes'], days_to_plot)):
+                if day in ['Saturday', 'Sunday']:
+                    patch.set_facecolor('orange')
+                    patch.set_alpha(0.7)
+                else:
+                    patch.set_facecolor('lightblue')
+                    patch.set_alpha(0.7)
+
+            ax5.set_title('Latency Distribution by Day of Week', fontsize=14, fontweight='bold')
+            ax5.set_ylabel('Latency (seconds)')
+            ax5.grid(True, alpha=0.3)
+            ax5.tick_params(axis='x', rotation=45)
+        else:
+            ax5.text(0.5, 0.5, 'Insufficient data for daily box plots',
+                     ha='center', va='center', transform=ax5.transAxes)
+            ax5.set_title('Latency Distribution by Day of Week', fontsize=14, fontweight='bold')
+    else:
+        ax5.text(0.5, 0.5, 'Insufficient data for daily analysis',
+                 ha='center', va='center', transform=ax5.transAxes)
+        ax5.set_title('Latency Distribution by Day of Week', fontsize=14, fontweight='bold')
+
+    # Plot 6: Summary statistics table
+    ax6 = axes[1, 2]
+    ax6.axis('tight')
+    ax6.axis('off')
+
+    # Calculate summary statistics
+    total_requests = len(df_model)
+    working_requests = len(working_data)
+    non_working_requests = len(non_working_data)
+
+    working_mean_latency = working_data['latency_seconds'].mean() if len(working_data) > 0 else 0
+    non_working_mean_latency = non_working_data['latency_seconds'].mean() if len(non_working_data) > 0 else 0
+
+    # Most active hours
+    if len(working_data) > 0:
+        working_hourly_counts = working_data['hour'].value_counts()
+        most_active_working_hour = working_hourly_counts.idxmax()
+        most_active_working_count = working_hourly_counts.max()
+    else:
+        most_active_working_hour = "N/A"
+        most_active_working_count = 0
+
+    if len(non_working_data) > 0:
+        non_working_hourly_counts = non_working_data['hour'].value_counts()
+        most_active_non_working_hour = non_working_hourly_counts.idxmax()
+        most_active_non_working_count = non_working_hourly_counts.max()
+    else:
+        most_active_non_working_hour = "N/A"
+        most_active_non_working_count = 0
+
+    summary_stats = [
+        ['Metric', 'Value'],
+        ['Total Requests', f'{total_requests:,}'],
+        ['Working Day Requests', f'{working_requests:,} ({working_requests/total_requests*100:.1f}%)'],
+        ['Non-Working Day Requests', f'{non_working_requests:,} ({non_working_requests/total_requests*100:.1f}%)'],
+        ['Most Active Hour (Working)', f'{most_active_working_hour}:00 ({most_active_working_count} requests)'],
+        ['Most Active Hour (Non-Working)', f'{most_active_non_working_hour}:00 ({most_active_non_working_count} requests)'],
+        ['Working Days Mean Latency', f'{working_mean_latency:.3f}s'],
+        ['Non-Working Days Mean Latency', f'{non_working_mean_latency:.3f}s'],
+        ['Latency Difference', f'{non_working_mean_latency - working_mean_latency:+.3f}s'],
+    ]
+
+    table = ax6.table(cellText=summary_stats[1:], colLabels=summary_stats[0],
+                      cellLoc='left', loc='center', colWidths=[0.6, 0.4])
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 1.5)
+
+    # Style the header
+    for i in range(len(summary_stats[0])):
+        table[(0, i)].set_facecolor('#4CAF50')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+
+    ax6.set_title('Summary Statistics', fontsize=14, fontweight='bold')
+
+    plt.tight_layout(rect=[0, 0, 1, 0.92])
+
+    # Save the plot
+    safe_model_name = model_name.replace("-", "_").replace(".", "_")
+    filename = os.path.join(plots_dir, f'hourly_weekday_analysis_{safe_model_name}_{timestamp_str}')
+
+    plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
+
+    if args.show:
+        plt.show()
+
+    print(f"Hourly weekday analysis saved:")
+    print(f" - {filename}.png")
+    print(f" - {filename}.pdf")
+
 
 def parse_arguments():
     """Parse command line arguments for start and end timestamps"""
@@ -602,6 +1009,7 @@ def analyze_concurrency_hypothesis(df_model, model_name):
 
     return df_concurrency
 
+
 def analyze_concurrent_requests(df_model, model_name, bucket_seconds=300, method='start_time'):
     """
     Analyze concurrent request patterns and their impact on response times
@@ -1016,8 +1424,14 @@ def analyze_model_data(df_model, model_name):
     # Create comprehensive visualizations
     plt.style.use('default')
     fig = plt.figure(figsize=(32, 36))  # Increased height for additional plots
-    fig.suptitle(f'Gemini Log Analysis - {model_name}\n{start_filter_timestamp} to {end_filter_timestamp} UTC',
-                 fontsize=18, fontweight='bold', y=0.98)
+
+    # Add page header
+    generation_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    add_page_header(fig, project_id, start_filter_timestamp, end_filter_timestamp, generation_time,
+                    f" - Model Analysis: {model_name}")
+
+    fig.suptitle(f'Gemini Log Analysis - {model_name}',
+                 fontsize=18, fontweight='bold', y=0.94)
 
     # === ROW 1: SUMMARY TABLES (3 tables across the full width) ===
 
@@ -1163,14 +1577,24 @@ def analyze_model_data(df_model, model_name):
             plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
                      str(count), ha='center', va='bottom')
 
-    # Plot 3: Latency vs Token Count (Original - Linear Scale)
+    # Plot 3: Latency vs Token Count (Original - Linear Scale) with smaller dots
     ax5 = plt.subplot(5, 3, 6)
     if df_tokens is not None and len(df_tokens) > 0:
-        scatter = plt.scatter(df_tokens['output_tokens'], df_tokens['latency_seconds'],
-                              alpha=0.6, s=40, c=df_tokens['latency_seconds'],
-                              cmap='viridis', edgecolors='black', linewidth=0.5)
+        # Use input tokens for color if available, otherwise use latency
+        if df_tokens['input_tokens'].notna().any():
+            color_data = df_tokens['input_tokens']
+            color_label = 'Input Tokens'
+            cmap = 'plasma'
+        else:
+            color_data = df_tokens['latency_seconds']
+            color_label = 'Latency (seconds)'
+            cmap = 'viridis'
 
-        plt.colorbar(scatter, label='Latency (seconds)')
+        scatter = plt.scatter(df_tokens['output_tokens'], df_tokens['latency_seconds'],
+                              alpha=0.6, s=8, c=color_data,  # Smaller dots (s=8)
+                              cmap=cmap, edgecolors='black', linewidth=0.1)
+
+        plt.colorbar(scatter, label=color_label)
         plt.title('Latency vs Output Token Count (Linear)', fontsize=14, fontweight='bold')
         plt.xlabel('Output Token Count')
         plt.ylabel('Latency (seconds)')
@@ -1192,18 +1616,28 @@ def analyze_model_data(df_model, model_name):
 
     # === ROW 3: NEW TOKEN ANALYSIS WITH LOG SCALE ===
 
-    # NEW Plot: Latency vs Token Count (Log Scale) - Brandt's suggestion
+    # NEW Plot: Latency vs Token Count (Log Scale) with smaller dots
     ax_log = plt.subplot(5, 3, 7)
     if df_tokens is not None and len(df_tokens) > 0:
         # Filter out zero or negative token counts for log scale
         df_tokens_positive = df_tokens[df_tokens['output_tokens'] > 0]
 
         if len(df_tokens_positive) > 0:
-            scatter = plt.scatter(df_tokens_positive['output_tokens'], df_tokens_positive['latency_seconds'],
-                                  alpha=0.6, s=40, c=df_tokens_positive['latency_seconds'],
-                                  cmap='viridis', edgecolors='black', linewidth=0.5)
+            # Use input tokens for color if available
+            if df_tokens_positive['input_tokens'].notna().any():
+                color_data = df_tokens_positive['input_tokens']
+                color_label = 'Input Tokens'
+                cmap = 'plasma'
+            else:
+                color_data = df_tokens_positive['latency_seconds']
+                color_label = 'Latency (seconds)'
+                cmap = 'viridis'
 
-            plt.colorbar(scatter, label='Latency (seconds)')
+            scatter = plt.scatter(df_tokens_positive['output_tokens'], df_tokens_positive['latency_seconds'],
+                                  alpha=0.6, s=8, c=color_data,  # Smaller dots (s=8)
+                                  cmap=cmap, edgecolors='black', linewidth=0.1)
+
+            plt.colorbar(scatter, label=color_label)
             plt.xscale('log')  # This is the key change - logarithmic x-axis
             plt.title('Latency vs Output Token Count (Log Scale)', fontsize=14, fontweight='bold')
             plt.xlabel('Output Token Count (Log Scale)')
@@ -1393,7 +1827,7 @@ def analyze_model_data(df_model, model_name):
         plt.text(0.5, 0.5, 'No token data available', ha='center', va='center', transform=ax15.transAxes)
         plt.title('Token Distribution (Log Scale)', fontsize=14, fontweight='bold')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96], pad=4.0)
+    plt.tight_layout(rect=[0, 0, 1, 0.90], pad=4.0)
 
     # Save plot to file
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
@@ -1506,6 +1940,9 @@ try:
     print(f"Unique models: {df_gemini['model_name'].nunique()}")
     print(f"Models found: {sorted(df_gemini['model_name'].unique())}")
 
+    # Store generation time for consistent headers
+    generation_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
     # Analyze each model separately
     for model_name in sorted(df_gemini['model_name'].unique()):
         if pd.notna(model_name):
@@ -1514,6 +1951,16 @@ try:
             # Run original analysis (enhanced with new token plots)
             analyze_model_data(df_model, model_name)
 
+            # NEW: Create standalone high-resolution latency vs token plots
+            df_tokens = df_model.dropna(subset=['output_tokens']) if 'output_tokens' in df_model.columns else None
+            if df_tokens is not None and len(df_tokens) > 0:
+                create_latency_token_plots(df_tokens, model_name, start_filter_timestamp,
+                                           end_filter_timestamp, generation_time)
+
+            # NEW: Create enhanced hourly analysis with weekday differentiation
+            create_hourly_analysis_with_weekday(df_model, model_name, start_filter_timestamp,
+                                                end_filter_timestamp, generation_time)
+
             # Run concurrent analysis with configurable bucket sizes
             for bucket_size in bucket_sizes:
                 print(f"\n" + "="*80)
@@ -1521,7 +1968,7 @@ try:
                 print("="*80)
                 analyze_concurrent_requests(df_model, model_name, bucket_size, bucket_method)
 
-            # NEW: Run focused concurrency hypothesis testing
+            # Run focused concurrency hypothesis testing
             print(f"\n" + "="*80)
             print(f"TESTING CONCURRENCY HYPOTHESIS FOR {model_name}")
             print("="*80)
