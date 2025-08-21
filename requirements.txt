@@ -7,3 +7,5 @@ google-cloud-bigquery
 google-cloud-bigquery-storage
 google-cloud-storage
 pandas
+scipy
+google-cloud-resource-manager

@@ -120,7 +120,7 @@ end_filter_timestamp_str = end_filter_timestamp.replace(" ","_").replace(":","-"
 timestamp_str = f"{start_filter_timestamp_str}_to_{end_filter_timestamp_str}"
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-plots_dir = os.path.join(script_dir, "plots")
+plots_dir = os.path.join(script_dir, "out")
 os.makedirs(plots_dir, exist_ok=True)
 
 
@@ -539,10 +539,11 @@ def analyze_app_version_data(df_app, app_version):
 
     # Save plot to file
     safe_app_version = app_version.replace(".", "_").replace("-", "_").replace("/", "_")
-    filename = os.path.join(plots_dir, f'prediction_analysis_{safe_app_version}_{timestamp_str}')
+    filename_png = os.path.join(plots_dir, f'png/prediction_analysis_{safe_app_version}_{timestamp_str}')
+    filename_pdf = os.path.join(plots_dir, f'prediction_analysis_{safe_app_version}_{timestamp_str}')
 
-    plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_png}.png', dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_pdf}.pdf', bbox_inches='tight', facecolor='white')
 
     # plt.show() # Commented out to match the Gemini analysis behavior
 

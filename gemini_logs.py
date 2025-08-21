@@ -1,14 +1,17 @@
+import argparse
 import json
+import os
+import sys
 import warnings
 from datetime import datetime, timezone, timedelta
-import argparse
+from io import StringIO
 
 import google.auth
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from google.cloud import bigquery
-import os
+from matplotlib.backends.backend_pdf import PdfPages
 
 warnings.filterwarnings('ignore')
 
@@ -18,6 +21,125 @@ try:
 except ImportError:
     print("Warning: scipy not available, statistical tests will be skipped")
     stats = None
+
+
+def add_terminal_output_multipage(pdf, model_name, terminal_output):
+    """Most reliable approach using proper matplotlib text handling"""
+    if not terminal_output.strip():
+        return
+
+    lines = terminal_output.split('\n')
+
+    # Split into reasonable chunks
+    max_lines_per_page = 45
+
+    page_num = 0
+    for start_line in range(0, len(lines), max_lines_per_page):
+        end_line = min(start_line + max_lines_per_page, len(lines))
+        page_lines = lines[start_line:end_line]
+        page_num += 1
+        total_pages = (len(lines) + max_lines_per_page - 1) // max_lines_per_page
+
+        # Create new figure for this page
+        fig, ax = plt.subplots(1, 1, figsize=(11, 8.5))
+        fig.patch.set_facecolor('white')
+
+        # Remove axes
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+
+        # Add title
+        title_text = f'Terminal Output - {model_name} (Page {page_num} of {total_pages})'
+        ax.text(0.5, 0.97, title_text,
+                fontsize=12, weight='bold', ha='center', va='top')
+
+        # Add content line by line for better control
+        y_position = 0.92
+        line_spacing = 0.018  # Adjust this to fit more/fewer lines
+
+        for i, line in enumerate(page_lines):
+            if y_position < 0.05:  # Stop if we run out of space
+                break
+
+            # Add line number and content
+            line_text = f"{start_line + i + 1:4d}: {line}"
+
+            # Truncate very long lines
+            if len(line_text) > 130:
+                line_text = line_text[:127] + "..."
+
+            ax.text(0.02, y_position, line_text,
+                    fontsize=7, fontfamily='monospace',
+                    ha='left', va='top')
+
+            y_position -= line_spacing
+
+        # Save page
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+        print(f"  Added terminal output page {page_num}/{total_pages} ({len(page_lines)} lines)")
+
+def create_model_pdf(model_name, df_model, start_time, end_time, generation_time):
+    """Create a single PDF with all plots and terminal output for a model"""
+    safe_model_name = model_name.replace("-", "_").replace(".", "_")
+    pdf_filename = os.path.join(plots_dir, f'complete_analysis_{safe_model_name}_{timestamp_str}.pdf')
+
+    # Start capturing output
+    output_capture = OutputCapture()
+    output_capture.start_capture()
+
+    with PdfPages(pdf_filename) as pdf:
+        # Generate and save all plots to PDF
+        # Main analysis
+        analyze_model_data(df_model, model_name, save_to_pdf=pdf)
+
+        # Token plots
+        df_tokens = df_model.dropna(subset=['output_tokens']) if 'output_tokens' in df_model.columns else None
+        if df_tokens is not None and len(df_tokens) > 0:
+            create_latency_token_plots(df_tokens, model_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+
+        # Hourly analysis
+        create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+
+        # Run concurrent analysis with configurable bucket sizes
+        for bucket_size in bucket_sizes:
+            print(f"\n" + "="*80)
+            print(f"ANALYZING {model_name} with {bucket_size}-second buckets")
+            print("="*80)
+            analyze_concurrent_requests(df_model, model_name, bucket_size, bucket_method, save_to_pdf=pdf)
+
+        # Concurrency hypothesis
+        analyze_concurrency_hypothesis(df_model, model_name, save_to_pdf=pdf)
+
+        # Stop capturing and get terminal output
+        output_capture.stop_capture()
+        add_terminal_output_multipage(pdf, model_name, output_capture.get_output())
+
+
+    return pdf_filename
+
+class OutputCapture:
+    def __init__(self):
+        self.terminal_output = StringIO()
+        self.original_stdout = sys.stdout
+
+    def start_capture(self):
+        sys.stdout = self
+
+    def stop_capture(self):
+        sys.stdout = self.original_stdout
+
+    def write(self, text):
+        self.original_stdout.write(text)  # Still print to terminal
+        self.terminal_output.write(text)  # Also capture
+
+    def flush(self):
+        self.original_stdout.flush()
+
+    def get_output(self):
+        return self.terminal_output.getvalue()
 
 # --- USER INPUT SECTION ---
 # BigQuery dataset and table IDs
@@ -62,7 +184,7 @@ Generated: {generation_time} UTC{title_suffix}"""
     fig.text(0.02, 0.98, header_text, fontsize=10, verticalalignment='top',
              bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
 
-def create_latency_token_plots(df_tokens, model_name, start_time, end_time, generation_time):
+def create_latency_token_plots(df_tokens, model_name, start_time, end_time, generation_time,  save_to_pdf=None):
     """Create standalone high-resolution latency vs token plots with multiple scales"""
     if df_tokens is None or len(df_tokens) == 0:
         print(f"No token data available for {model_name}")
@@ -189,23 +311,22 @@ def create_latency_token_plots(df_tokens, model_name, start_time, end_time, gene
     plt.tight_layout(rect=[0, 0, 1, 0.88])
 
     # Save high-resolution plots
-    filename_base = os.path.join(plots_dir, f'latency_vs_tokens_{safe_model_name}_{timestamp_str}')
+    filename_base = os.path.join(png_dir, f'latency_vs_tokens_{safe_model_name}_{timestamp_str}')
 
     # Save as high-resolution PNG (4K equivalent)
     plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
     plt.savefig(f'{filename_base}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename_base}.pdf', bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
 
     if args.show:
         plt.show()
-
-    print(f"High-resolution latency vs token plots saved:")
-    print(f" - {filename_base}_4K.png (4K resolution)")
-    print(f" - {filename_base}.png (standard resolution)")
-    print(f" - {filename_base}.pdf")
+    else:
+        plt.close(fig)
 
 
-def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_time, generation_time):
+def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_time, generation_time, save_to_pdf=None):
     """Create enhanced hourly analysis differentiated by working vs non-working days"""
     if df_model.empty:
         print(f"No data available for {model_name}")
@@ -427,17 +548,18 @@ def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_ti
 
     # Save the plot
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
-    filename = os.path.join(plots_dir, f'hourly_weekday_analysis_{safe_model_name}_{timestamp_str}')
+    filename = os.path.join(png_dir, f'hourly_weekday_analysis_{safe_model_name}_{timestamp_str}')
 
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
+
 
     if args.show:
         plt.show()
-
-    print(f"Hourly weekday analysis saved:")
-    print(f" - {filename}.png")
-    print(f" - {filename}.pdf")
+    else:
+        plt.close(fig)
 
 
 def parse_arguments():
@@ -461,6 +583,13 @@ def parse_arguments():
                         default=default_end,
                         help=f'End timestamp in format "YYYY-MM-DD HH:MM:SS" (default: current UTC time)')
 
+    parser.add_argument('--model_name',
+                        type=str,
+                        default=None,
+                        help='Analyze only the specified model name (e.g., "gemini-2.0-flash-lite"). If not provided,'
+                             ' all models will be analyzed.')
+
+
     parser.add_argument('--days', '-d',
                         type=int,
                         default=None,
@@ -469,8 +598,8 @@ def parse_arguments():
     # NEW: Bucket configuration arguments
     parser.add_argument('--bucket-sizes', '-b',
                         type=str,
-                        default="300,600",
-                        help='Comma-separated list of bucket sizes in seconds (default: "300,600" for 5min,10min). Examples: "60,300" for 1min,5min or "10,60,300" for 10s,1min,5min')
+                        default="5,10",
+                        help='Comma-separated list of bucket sizes in seconds (default: "5,10" for 5min,10min). Examples: "60,300" for 1min,5min or "10,60,300" for 10s,1min,5min')
 
     parser.add_argument('--bucket-method', '-m',
                         choices=['start_time', 'overlap'],
@@ -571,8 +700,10 @@ end_filter_timestamp_str = end_filter_timestamp.replace(" ","_").replace(":","-"
 timestamp_str = f"{start_filter_timestamp_str}_to_{end_filter_timestamp_str}"
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-plots_dir = os.path.join(script_dir, "plots")
-os.makedirs(plots_dir, exist_ok=True)
+plots_dir = os.path.join(script_dir, "out")
+png_dir = os.path.join(plots_dir, "png")
+os.makedirs(png_dir, exist_ok=True)
+
 
 print(f"Using dataset_id={dataset_id}, gemini_table_id={gemini_table_id}, project_id={project_id}")
 print(f"Analyzing data from {start_filter_timestamp} to {end_filter_timestamp} UTC")
@@ -656,7 +787,7 @@ def safe_polyfit(x, y, degree=1):
         print(f"Warning: Could not fit polynomial trend line: {e}")
         return None, None
 
-def analyze_concurrency_hypothesis(df_model, model_name):
+def analyze_concurrency_hypothesis(df_model, model_name, save_to_pdf=None):
     """
     Focused analysis to test the hypothesis that higher concurrency leads to longer response times.
     Uses multiple approaches to reduce noise and highlight the relationship.
@@ -978,12 +1109,16 @@ def analyze_concurrency_hypothesis(df_model, model_name):
 
     # Save the plot
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
-    filename = os.path.join(plots_dir, f'concurrency_hypothesis_{safe_model_name}_{timestamp_str}')
+    filename = os.path.join(png_dir, f'concurrency_hypothesis_{safe_model_name}_{timestamp_str}')
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
 
     if args.show:
         plt.show()
+    else:
+        plt.close(fig)
 
     # Summary insights
     print(f"\n--- Hypothesis Testing Results ---")
@@ -1003,14 +1138,10 @@ def analyze_concurrency_hypothesis(df_model, model_name):
         else:
             print(f"✗ MINIMAL PERFORMANCE IMPACT: {performance_impact:+.1f}% latency change during high concurrency")
 
-    print(f"\nPlots saved as:")
-    print(f" - {filename}.png")
-    print(f" - {filename}.pdf")
 
     return df_concurrency
 
-
-def analyze_concurrent_requests(df_model, model_name, bucket_seconds=300, method='start_time'):
+def analyze_concurrent_requests(df_model, model_name, bucket_seconds=300, method='start_time', save_to_pdf=None):
     """
     Analyze concurrent request patterns and their impact on response times
 
@@ -1225,12 +1356,17 @@ def analyze_concurrent_requests(df_model, model_name, bucket_seconds=300, method
     # Save the plot
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
     method_suffix = "start" if method == 'start_time' else "overlap"
-    filename = os.path.join(plots_dir, f'concurrent_analysis_{safe_model_name}_{bucket_seconds}s_{method_suffix}_{timestamp_str}')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
+
+    filename = os.path.join(png_dir, f'concurrent_analysis_{safe_model_name}_{bucket_seconds}s_{method_suffix}_{timestamp_str}')
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
 
     if args.show:
         plt.show()
+    else:
+        plt.close(fig)
 
     # Create summary table
     print(f"\n--- Bucket-by-Bucket Analysis (showing top 10 by {request_label.lower()}) ---")
@@ -1281,13 +1417,11 @@ def analyze_concurrent_requests(df_model, model_name, bucket_seconds=300, method
             token_strength = "Weak"
         print(f"   - Input Tokens vs Response Time: {token_strength} correlation ({input_tokens_vs_mean_latency:.3f})")
 
-    print(f"\nPlots saved as:")
-    print(f" - {filename}.png")
-    print(f" - {filename}.pdf")
+
 
     return df_buckets
 
-def analyze_model_data(df_model, model_name):
+def analyze_model_data(df_model, model_name, save_to_pdf=None):
     """Generate comprehensive analysis for a specific model"""
 
     print(f"\n{'='*60}")
@@ -1797,7 +1931,7 @@ def analyze_model_data(df_model, model_name):
         plt.scatter(df_tokens_sorted['request_order'], df_tokens_sorted['output_tokens'],
                     alpha=0.6, s=20, c=df_tokens_sorted['latency_seconds'], cmap='viridis')
         plt.colorbar(label='Latency (seconds)')
-        plt.title('Token Count Over Time', fontsize=14, fontweight='bold')
+        plt.title('Output Token Count Over Time', fontsize=14, fontweight='bold')
         plt.xlabel('Request Order')
         plt.ylabel('Output Token Count')
         plt.grid(True, alpha=0.3)
@@ -1831,13 +1965,18 @@ def analyze_model_data(df_model, model_name):
 
     # Save plot to file
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
-    filename = os.path.join(plots_dir, f'gemini_analysis_{safe_model_name}_{timestamp_str}')
+    filename = os.path.join(png_dir, f'gemini_analysis_{safe_model_name}_{timestamp_str}')
 
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig(f'{filename}.pdf', bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
 
     if args.show:
         plt.show()
+    else:
+        plt.close(fig)
+
 
     # Print insights (ENHANCED WITH STD DEV INSIGHTS) - UPDATED FOR NEW CATEGORIES
     print(f"\n--- Key Insights for {model_name} ---")
@@ -1907,9 +2046,6 @@ def analyze_model_data(df_model, model_name):
         percentage = (count / len(df_model)) * 100
         print(f"   - {category}: {count} requests ({percentage:.1f}%)")
 
-    print(f"Plots saved as:")
-    print(f" - {filename}.png")
-    print(f" - {filename}.pdf")
 
 try:
     # Run the query and get the result as a DataFrame
@@ -1943,36 +2079,41 @@ try:
     # Store generation time for consistent headers
     generation_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    models_to_analyze = []
+    if args.model_name:
+        if args.model_name in df_gemini['model_name'].values:
+            models_to_analyze = [args.model_name]
+            print(f"Analyzing only model: {args.model_name}")
+        else:
+            available_models = sorted(df_gemini['model_name'].unique())
+            print(f"Error: Model '{args.model_name}' not found in data.")
+            print(f"Available models: {available_models}")
+            exit(1)
+    else:
+        models_to_analyze = sorted(df_gemini['model_name'].unique())
+        print(f"Analyzing all models: {models_to_analyze}")
+
     # Analyze each model separately
-    for model_name in sorted(df_gemini['model_name'].unique()):
+    for model_name in models_to_analyze:
         if pd.notna(model_name):
+            print(f"\n{'='*80}")
+            print(f"PROCESSING MODEL: {model_name}")
+            print(f"{'='*80}")
+
+            # Start capturing terminal output for this model
+            output_capture = OutputCapture()
+            output_capture.start_capture()
+
             df_model = df_gemini[df_gemini['model_name'] == model_name].copy()
 
-            # Run original analysis (enhanced with new token plots)
-            analyze_model_data(df_model, model_name)
+            # Create PDF with all analysis for this model
+            pdf_filename = create_model_pdf(model_name, df_model, start_filter_timestamp,
+                                            end_filter_timestamp, generation_time)
 
-            # NEW: Create standalone high-resolution latency vs token plots
-            df_tokens = df_model.dropna(subset=['output_tokens']) if 'output_tokens' in df_model.columns else None
-            if df_tokens is not None and len(df_tokens) > 0:
-                create_latency_token_plots(df_tokens, model_name, start_filter_timestamp,
-                                           end_filter_timestamp, generation_time)
+            # Stop capturing
+            output_capture.stop_capture()
 
-            # NEW: Create enhanced hourly analysis with weekday differentiation
-            create_hourly_analysis_with_weekday(df_model, model_name, start_filter_timestamp,
-                                                end_filter_timestamp, generation_time)
-
-            # Run concurrent analysis with configurable bucket sizes
-            for bucket_size in bucket_sizes:
-                print(f"\n" + "="*80)
-                print(f"ANALYZING {model_name} with {bucket_size}-second buckets")
-                print("="*80)
-                analyze_concurrent_requests(df_model, model_name, bucket_size, bucket_method)
-
-            # Run focused concurrency hypothesis testing
-            print(f"\n" + "="*80)
-            print(f"TESTING CONCURRENCY HYPOTHESIS FOR {model_name}")
-            print("="*80)
-            analyze_concurrency_hypothesis(df_model, model_name)
+            print(f"\nComplete analysis for {model_name} saved to: {pdf_filename}")
 
 except Exception as e:
     print(f"An error occurred: {e}")
